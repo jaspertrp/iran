@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Military Air Picture — Multi-Source</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root{
+    --bg:#070b12;
+    --panel:rgba(11,18,30,0.82);
+    --panel-solid:#0b1220;
+    --line:rgba(122,152,182,0.16);
+    --line-strong:rgba(122,152,182,0.30);
+    --ink:#c9d6e3;
+    --ink-dim:#6b7d90;
+    --ink-faint:#47566a;
+    --mil:#ffb020;      /* amber  — military */
+    --emgcy:#ff3b46;    /* red    — emergency squawk */
+    --sel:#ff35c4;      /* magenta— selected/tracked */
+    --ok:#35e08a;       /* green  — source live */
+    --off:#48586c;      /* grey   — source offline / proxy-only */
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden;-webkit-font-smoothing:antialiased}
+  #map{position:absolute;inset:0;background:var(--bg);z-index:1}
+  .leaflet-container{background:var(--bg);font-family:var(--mono)}
+  .leaflet-control-attribution{background:rgba(7,11,18,0.7)!important;color:var(--ink-faint)!important;font-family:var(--mono);font-size:9px}
+  .leaflet-control-attribution a{color:var(--ink-dim)!important}
+
+  /* Status strip */
+  .strip{position:absolute;top:0;left:0;right:0;z-index:1000;display:flex;align-items:center;gap:16px;
+    padding:9px 14px;background:linear-gradient(180deg,rgba(7,11,18,0.94),rgba(7,11,18,0.72));
+    border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+  .brand{display:flex;align-items:center;gap:9px;min-width:0}
+  .brand h1{margin:0;font-family:var(--mono);font-weight:600;font-size:12.5px;letter-spacing:.14em;color:var(--ink);white-space:nowrap}
+  .brand h1 .sub{color:var(--ink-dim);font-weight:400}
+  .strip-spacer{flex:1}
+  .readout{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--ink-dim);white-space:nowrap}
+  .readout b{color:var(--ink);font-weight:600}
+  .readout .mil-n{color:var(--mil)}
+  .divider{width:1px;height:20px;background:var(--line)}
+  .badge{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;font-weight:600;
+    letter-spacing:.12em;padding:5px 10px;border-radius:3px;border:1px solid var(--line-strong);white-space:nowrap}
+  .badge .dot{width:7px;height:7px;border-radius:50%}
+  .badge.live{color:var(--ok);border-color:rgba(53,224,138,.4);background:rgba(53,224,138,.07)}
+  .badge.live .dot{background:var(--ok);animation:blink 1.6s steps(1) infinite}
+  .badge.sim{color:var(--mil);border-color:rgba(255,176,32,.4);background:rgba(255,176,32,.08)}
+  .badge.sim .dot{background:var(--mil)}
+  .badge.wait{color:var(--ink-dim)}
+  .badge.wait .dot{background:var(--ink-dim);animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:.15}}
+
+  .sim-banner{position:absolute;top:41px;left:0;right:0;z-index:999;display:none;align-items:center;gap:8px;
+    padding:6px 14px;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:#1a1204;background:var(--mil)}
+  .sim-banner.show{display:flex}
+  .sim-banner b{font-weight:700}
+
+  /* Control cluster */
+  .controls{position:absolute;left:14px;bottom:16px;z-index:1000;width:250px;background:var(--panel);
+    border:1px solid var(--line);border-radius:6px;backdrop-filter:blur(10px);overflow:hidden}
+  .ctl-head{padding:8px 12px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-faint)}
+  .ctl-body{padding:11px 12px;display:flex;flex-direction:column;gap:11px}
+  .seg{display:flex;border:1px solid var(--line-strong);border-radius:4px;overflow:hidden}
+  .seg button{flex:1;appearance:none;border:0;cursor:pointer;background:transparent;color:var(--ink-dim);
+    font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.04em;padding:8px 3px;transition:background .12s,color .12s}
+  .seg button+button{border-left:1px solid var(--line-strong)}
+  .seg button:hover{color:var(--ink)}
+  .seg button.on{background:var(--mil);color:#160f02}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .field label{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--ink-dim)}
+  .sel-wrap{position:relative}
+  select.rate{appearance:none;cursor:pointer;background:var(--panel-solid);color:var(--ink);border:1px solid var(--line-strong);
+    border-radius:4px;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;padding:5px 24px 5px 9px}
+  .sel-wrap::after{content:"▾";position:absolute;right:8px;top:50%;transform:translateY(-50%);color:var(--ink-dim);font-size:9px;pointer-events:none}
+  .btn-ghost{appearance:none;cursor:pointer;width:100%;background:var(--panel-solid);color:var(--ink-dim);border:1px solid var(--line-strong);
+    border-radius:4px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:7px;transition:color .12s,border-color .12s}
+  .btn-ghost:hover{color:var(--ink);border-color:var(--ink-dim)}
+
+  .feeds{border-top:1px solid var(--line);padding-top:10px}
+  .feeds .feeds-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+  .feeds-head span{font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--ink-faint)}
+  .feeds-head b{font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--ink-dim);font-weight:600}
+  .feed-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.02em}
+  .feed-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--off)}
+  .feed-dot.ok{background:var(--ok)}
+  .feed-dot.fail{background:var(--emgcy)}
+  .feed-name{color:var(--ink-dim);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .feed-row.live .feed-name{color:var(--ink)}
+  .feed-cnt{color:var(--ink-dim);font-variant-numeric:tabular-nums}
+  .feed-cnt.zero{color:var(--ink-faint)}
+  .feed-tag{color:var(--ink-faint);font-size:9px;letter-spacing:.08em}
+  .feeds-foot{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-family:var(--mono);
+    font-size:9.5px;letter-spacing:.04em;color:var(--ink-faint)}
+  .feeds-foot b{color:var(--mil)}
+
+  /* Legend */
+  .legend{position:absolute;right:14px;bottom:34px;z-index:1000;background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    backdrop-filter:blur(10px);padding:10px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--ink-dim)}
+  .lg-row{display:flex;align-items:center;gap:8px;padding:2px 0}
+  .lg-glyph{width:12px;height:12px;flex:none}
+  .lg-glyph svg{display:block}
+
+  /* Flight strip */
+  .strip-panel{position:absolute;top:52px;right:14px;z-index:1000;width:288px;background:var(--panel);border:1px solid var(--line-strong);
+    border-radius:6px;backdrop-filter:blur(12px);overflow:hidden;transform:translateX(calc(100% + 22px));transition:transform .22s ease;box-shadow:0 12px 34px rgba(0,0,0,.4)}
+  .strip-panel.open{transform:translateX(0)}
+  .sp-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:12px 13px;border-bottom:1px solid var(--line)}
+  .sp-call{font-family:var(--mono);font-size:19px;font-weight:600;letter-spacing:.04em;color:var(--ink)}
+  .sp-sub{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--ink-dim);margin-top:3px}
+  .chip{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.12em;padding:3px 7px;border-radius:3px;margin-top:7px}
+  .chip.mil{color:#160f02;background:var(--mil)}
+  .chip.emgcy{color:#fff;background:var(--emgcy)}
+  .sp-close{appearance:none;cursor:pointer;background:transparent;border:0;color:var(--ink-faint);font-size:18px;line-height:1;padding:2px 4px}
+  .sp-close:hover{color:var(--ink)}
+  .em-banner{display:none;padding:7px 13px;background:var(--emgcy);color:#fff;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.1em}
+  .em-banner.show{display:block}
+  .sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+  .cell{background:var(--panel-solid);padding:9px 12px}
+  .cell .k{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;color:var(--ink-faint)}
+  .cell .v{font-family:var(--mono);font-size:15px;color:var(--ink);margin-top:3px}
+  .cell .v small{font-size:9px;color:var(--ink-dim);letter-spacing:.05em}
+  .sp-src{padding:9px 13px;border-bottom:1px solid var(--line)}
+  .sp-src .k{font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;color:var(--ink-faint);margin-bottom:5px}
+  .sp-src .tags{display:flex;flex-wrap:wrap;gap:4px}
+  .src-tag{font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--ok);border:1px solid rgba(53,224,138,.35);
+    background:rgba(53,224,138,.06);border-radius:3px;padding:2px 6px}
+  .sp-foot{padding:9px 13px;font-family:var(--mono);font-size:9px;line-height:1.55;color:var(--ink-faint)}
+
+  .note{position:absolute;left:14px;top:52px;z-index:900;max-width:290px;font-family:var(--mono);font-size:9.5px;line-height:1.55;
+    letter-spacing:.02em;color:var(--ink-faint);pointer-events:none}
+  .note b{color:var(--ink-dim)}
+
+  /* Empty / error overlay */
+  .empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:800;max-width:420px;text-align:center;
+    background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:20px 22px;display:none;backdrop-filter:blur(10px)}
+  .empty.show{display:block}
+  .empty h2{margin:0 0 8px;font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--mil)}
+  .empty p{margin:0 0 6px;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--ink-dim)}
+  .empty code{color:var(--ink);background:var(--panel-solid);padding:1px 5px;border-radius:3px}
+
+  /* Markers */
+  .ac-mk{position:relative;width:100%;height:100%;filter:drop-shadow(0 0 3px rgba(0,0,0,.7))}
+  .ac-mk.is-sel::before{content:"";position:absolute;inset:-9px;border:1.5px solid var(--sel);border-radius:50%;box-shadow:0 0 8px rgba(255,53,196,.55)}
+  .ac-mk.is-emgcy::after{content:"";position:absolute;inset:-6px;border:1.5px solid var(--emgcy);border-radius:50%;animation:ping 1.1s ease-out infinite}
+  @keyframes ping{0%{transform:scale(.7);opacity:.9}100%{transform:scale(1.7);opacity:0}}
+  .ac-lbl{position:absolute;left:50%;top:calc(100% + 2px);transform:translateX(-50%);font-family:var(--mono);font-size:9px;font-weight:600;
+    letter-spacing:.03em;color:var(--ink);white-space:nowrap;text-shadow:0 0 4px #000,0 0 4px #000;padding:0 2px}
+
+  @media (prefers-reduced-motion:reduce){.badge .dot,.ac-mk.is-emgcy::after{animation:none!important}}
+  @media (max-width:760px){
+    .brand h1 .sub{display:none}
+    .controls{width:calc(100% - 28px)}
+    .legend{display:none}
+    .note{display:none}
+    .strip-panel{width:calc(100% - 28px);right:14px;left:14px;transform:translateY(calc(100% + 70px))}
+    .strip-panel.open{transform:translateY(0)}
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="strip">
+  <div class="brand">
+    <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 3 L18.5 20 L12 15.7 L5.5 20 Z" fill="var(--mil)" stroke="#0a0f1a" stroke-width="0.5"/></svg>
+    <h1>MIL AIR PICTURE&nbsp;&nbsp;<span class="sub" id="region-label">MIDDLE EAST</span></h1>
+  </div>
+  <div class="strip-spacer"></div>
+  <div class="readout" id="clock">UPD&nbsp;—:—:—Z</div>
+  <div class="divider"></div>
+  <div class="readout"><span class="mil-n">MIL <b id="cnt-mil">0</b></span>&nbsp;&nbsp;·&nbsp;&nbsp;SRC <b id="cnt-src">0/4</b></div>
+  <div class="divider"></div>
+  <div class="badge wait" id="link"><span class="dot"></span><span id="link-txt">ACQUIRING</span></div>
+</div>
+
+<div class="sim-banner" id="sim-banner">
+  <span>▲</span><b>SIMULATED DATA</b>
+  <span id="sim-reason">— no feed reachable from here. Open this file locally (or run the proxy) for real data.</span>
+</div>
+
+<div class="note">
+  <b>Multi-source merge.</b> Aircraft are pooled from several unfiltered feeds and de-duplicated by ICAO hex,
+  so each feed adds the planes the others can't see. ADS-B still only shows what's broadcasting —
+  most Iranian military aircraft won't appear. Verify before drawing conclusions.
+</div>
+
+<div class="controls">
+  <div class="ctl-head">SENSOR CONTROL</div>
+  <div class="ctl-body">
+    <div class="seg" id="region-seg">
+      <button data-region="iran">IRAN</button>
+      <button data-region="mideast" class="on">MID-EAST</button>
+      <button data-region="world">WORLD</button>
+    </div>
+    <div class="field">
+      <label>REFRESH</label>
+      <div class="sel-wrap">
+        <select class="rate" id="rate">
+          <option value="5000">5 s</option>
+          <option value="10000" selected>10 s</option>
+          <option value="30000">30 s</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn-ghost" id="recenter">RECENTER</button>
+
+    <div class="feeds">
+      <div class="feeds-head"><span>FEEDS · LIVE MERGE</span></div>
+      <div id="feed-list"></div>
+      <div class="feeds-foot"><b id="foot-unique">0</b> unique aircraft · <span id="foot-detail">merged from feeds</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="lg-row"><span class="lg-glyph"><svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 3 L18 20 L12 16 L6 20 Z" fill="#ffb020"/></svg></span>MILITARY</div>
+  <div class="lg-row"><span class="lg-glyph"><svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 3 L18 20 L12 16 L6 20 Z" fill="#ff3b46"/></svg></span>EMERGENCY</div>
+</div>
+
+<div class="strip-panel" id="panel">
+  <div class="em-banner" id="em-banner">EMERGENCY · SQUAWK <span id="em-code">7700</span></div>
+  <div class="sp-head">
+    <div>
+      <div class="sp-call" id="sp-call">—</div>
+      <div class="sp-sub" id="sp-sub">—</div>
+      <span class="chip mil" id="sp-chip">MILITARY</span>
+    </div>
+    <button class="sp-close" id="sp-close">×</button>
+  </div>
+  <div class="sp-grid">
+    <div class="cell"><div class="k">ALT BARO</div><div class="v" id="d-alt">—</div></div>
+    <div class="cell"><div class="k">GROUND SPD</div><div class="v" id="d-gs">—</div></div>
+    <div class="cell"><div class="k">TRACK</div><div class="v" id="d-trk">—</div></div>
+    <div class="cell"><div class="k">SQUAWK</div><div class="v" id="d-sqk">—</div></div>
+    <div class="cell"><div class="k">ICAO HEX</div><div class="v" id="d-hex">—</div></div>
+    <div class="cell"><div class="k">REG</div><div class="v" id="d-reg">—</div></div>
+  </div>
+  <div class="sp-src"><div class="k">SEEN BY</div><div class="tags" id="d-src"></div></div>
+  <div class="sp-foot" id="sp-foot">POS —</div>
+</div>
+
+<div class="empty" id="empty">
+  <h2>NO FEED REACHABLE</h2>
+  <p>None of the sources answered. If you opened this as a <code>file://</code> page, your browser is likely blocking the cross-origin calls.</p>
+  <p>Fix: serve it over localhost — <code>python3 -m http.server</code> in this folder, then open <code>http://localhost:8000/index.html</code>. Or run <code>server.js</code> for the proxy path (adds OpenSky too).</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+"use strict";
+
+/* ---------- Config ---------- */
+const REGIONS = {
+  iran:    { label:"IRAN THEATER", box:{s:22,n:42,w:44,e:64}, center:[30,53], zoom:5 },
+  mideast: { label:"MIDDLE EAST",  box:{s:8, n:45,w:22,e:78}, center:[27,48], zoom:4 },
+  world:   { label:"WORLDWIDE",    box:null,                  center:[22,15], zoom:2 }
+};
+
+// Unfiltered community military feeds — all ADSBExchange-v2 schema, all CORS-enabled,
+// all rate-limited to ~1 req/sec. Merged + de-duplicated by hex client-side.
+const FEEDS = [
+  { id:"airplanes.live", url:"https://api.airplanes.live/v2/mil",     browser:true },
+  { id:"adsb.fi",        url:"https://opendata.adsb.fi/api/v2/mil",   browser:true },
+  { id:"adsb.lol",       url:"https://api.adsb.lol/v2/mil",           browser:true },
+  { id:"adsb.one",       url:"https://api.adsb.one/v2/mil",           browser:true },
+  // OpenSky adds an independent receiver network but sends no CORS headers,
+  // so it can't be reached from the browser — it only arrives via the proxy.
+  { id:"opensky",        url:null,                                    browser:false }
+];
+
+const PROXY_URL="http://localhost:8787/aircraft";
+const EM_SQUAWKS=new Set(["7500","7600","7700"]);
+
+/* ---------- State ---------- */
+let region="mideast";
+let selectedHex=null;
+let currentList=[];
+let sourceStatus={};   // id -> {ok, count}
+let liveSource="";
+let timer=null;
+let lastTick=Date.now();
+
+/* ---------- Map ---------- */
+const map=L.map("map",{zoomControl:false,attributionControl:true,worldCopyJump:true})
+  .setView(REGIONS[region].center, REGIONS[region].zoom);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
+  subdomains:"abcd",maxZoom:19,attribution:'&copy; OpenStreetMap &copy; CARTO'
+}).addTo(map);
+let boxLayer=null;
+function drawBox(){
+  if(boxLayer){map.removeLayer(boxLayer);boxLayer=null;}
+  const b=REGIONS[region].box;
+  if(!b)return;
+  boxLayer=L.rectangle([[b.s,b.w],[b.n,b.e]],
+    {color:"#ffb020",weight:1,opacity:.28,fill:false,dashArray:"4 5",interactive:false}).addTo(map);
+}
+drawBox();
+const markersLayer=L.layerGroup().addTo(map);
+
+/* ---------- Helpers ---------- */
+function inRegion(a){
+  const b=REGIONS[region].box;
+  if(!b) return typeof a.lat==="number";
+  return typeof a.lat==="number"&&typeof a.lon==="number"&&
+         a.lat>=b.s&&a.lat<=b.n&&a.lon>=b.w&&a.lon<=b.e;
+}
+const sqk=a=>String(a.squawk||"").trim();
+const isEmgcy=a=>EM_SQUAWKS.has(sqk(a))||(a.emergency&&a.emergency!=="none");
+const fmtAlt=v=>(v==="ground"||v==="GND")?"GND":(typeof v==="number"?v.toLocaleString():"—");
+const pad=n=>String(n).padStart(2,"0");
+const zulu=d=>`${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* ---------- Merge ---------- */
+// results: [{id, ok, ac:[...]}]  →  one record per hex, tagged with contributing sources
+function mergeByHex(results){
+  const byHex=new Map();
+  for(const res of results){
+    if(!res.ok) continue;
+    for(const a of res.ac){
+      const h=(a.hex||"").toLowerCase();
+      if(!h) continue;
+      if(byHex.has(h)){
+        const e=byHex.get(h);
+        e.__src.add(res.id);
+        const es=e.seen==null?1e9:e.seen, as=a.seen==null?1e9:a.seen;
+        if(typeof a.lat==="number" && as<es){   // fresher fix wins
+          e.lat=a.lat; e.lon=a.lon; e.alt_baro=a.alt_baro; e.gs=a.gs;
+          e.track=a.track; e.squawk=a.squawk; e.seen=a.seen;
+        }
+        e.t=e.t||a.t; e.r=e.r||a.r; e.flight=e.flight||a.flight;
+      }else{
+        const rec={...a,hex:h,__src:new Set(res.sources_for?res.sources_for(a):[res.id])};
+        byHex.set(h,rec);
+      }
+    }
+  }
+  return [...byHex.values()];
+}
+
+/* ---------- Fetch: proxy first, then direct multi-feed ---------- */
+async function fetchOne(feed){
+  try{
+    const ctrl=new AbortController();
+    const t=setTimeout(()=>ctrl.abort(),6000);
+    const res=await fetch(feed.url,{signal:ctrl.signal,headers:{Accept:"application/json"}});
+    clearTimeout(t);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const data=await res.json();
+    return { id:feed.id, ok:true, ac:(data.ac||data.aircraft||[]).filter(a=>a&&a.hex) };
+  }catch(e){ return { id:feed.id, ok:false, ac:[], error:e.message }; }
+}
+
+async function fetchDirect(){
+  const browserFeeds=FEEDS.filter(f=>f.browser);
+  const results=await Promise.all(browserFeeds.map(fetchOne));
+  const merged=mergeByHex(results);
+  // status for every configured feed (opensky shown as proxy-only)
+  const status={};
+  for(const f of FEEDS) status[f.id]={ok:f.browser?false:null, count:0, proxyOnly:!f.browser};
+  for(const r of results) status[r.id]={ok:r.ok, count:0, proxyOnly:false, error:r.error};
+  liveSource="DIRECT";
+  return { list:merged, status };
+}
+
+async function fetchViaProxy(){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),4000);
+  const res=await fetch(PROXY_URL,{signal:ctrl.signal});
+  clearTimeout(t);
+  if(!res.ok) throw new Error("proxy HTTP "+res.status);
+  const data=await res.json();
+  // proxy already merged; each aircraft carries a `sources` array
+  const list=(data.ac||[]).filter(a=>a&&a.hex).map(a=>({...a,hex:(a.hex||"").toLowerCase(),__src:new Set(a.sources||[])}));
+  const status={};
+  for(const f of FEEDS) status[f.id]={ok:null,count:0,proxyOnly:false};
+  for(const s of (data.sources||[])) status[s.id]={ok:s.ok,count:0,error:s.error};
+  liveSource="PROXY";
+  return { list, status };
+}
+
+async function fetchLive(){
+  let out;
+  try{ out=await fetchViaProxy(); }
+  catch(_){ out=await fetchDirect(); }
+  const anyOk=Object.values(out.status).some(s=>s.ok===true);
+  if(!anyOk && out.list.length===0) throw new Error("no source reachable");
+  return out;
+}
+
+/* ---------- Simulated fallback (sandbox only, clearly badged) ---------- */
+let simState=null;
+function seedSim(){
+  simState=[
+    {hex:"ae0491",flight:"RCH271 ",t:"C17", r:"07-7176",alt_baro:33000,gs:452,track:105,lat:26.6,lon:51.4,squawk:"1401",__src:new Set(["airplanes.live","adsb.lol"])},
+    {hex:"ae0102",flight:"QID11  ",t:"K35R",r:"62-3512",alt_baro:27000,gs:405,track:270,lat:27.25,lon:50.75,squawk:"4302",__src:new Set(["airplanes.live","adsb.fi","adsb.one"])},
+    {hex:"ae01d9",flight:"HOMER71",t:"RC135",r:"62-4139",alt_baro:34000,gs:430,track:88,lat:29.4,lon:49.4,squawk:"5211",__src:new Set(["adsb.fi","adsb.lol"])},
+    {hex:"ae6c33",flight:"PROWL5 ",t:"P8",  r:"169328", alt_baro:22000,gs:392,track:150,lat:26.05,lon:56.2,squawk:"3620",__src:new Set(["airplanes.live"])},
+    {hex:"ae5a20",flight:"       ",t:"Q9",  r:"",       alt_baro:20000,gs:210,track:200,lat:30.1,lon:48.7,squawk:"4571",__src:new Set(["adsb.one"])},
+    {hex:"43c7a1",flight:"RRR7212",t:"A332",r:"ZZ338",  alt_baro:31000,gs:441,track:300,lat:25.1,lon:52.0,squawk:"2703",__src:new Set(["adsb.lol","adsb.one"])},
+    {hex:"ae07ee",flight:"BOLT44 ",t:"F15", r:"",       alt_baro:29000,gs:465,track:75, lat:28.9,lon:52.6,squawk:"7700",__src:new Set(["airplanes.live","adsb.fi"])},
+    {hex:"3ec1a2",flight:"GAF674 ",t:"A400",r:"54+12",  alt_baro:30000,gs:410,track:135,lat:35.2,lon:38.4,squawk:"6134",__src:new Set(["adsb.fi"])},
+    {hex:"4b7f81",flight:"SUI9821",t:"PC24",r:"T-786",  alt_baro:28000,gs:400,track:95, lat:33.1,lon:44.9,squawk:"2222",__src:new Set(["adsb.lol"])}
+  ];
+}
+function simulate(dt){
+  if(!simState)seedSim();
+  for(const a of simState){
+    const spd=(a.gs||300)*0.514444, dist=spd*dt;
+    a.lat+=(dist*Math.cos(a.track*Math.PI/180))/111320;
+    a.lon+=(dist*Math.sin(a.track*Math.PI/180))/(111320*Math.cos(a.lat*Math.PI/180));
+    if(a.lat<8||a.lat>45||a.lon<22||a.lon>78) a.track=(a.track+180)%360;
+    a.seen=Math.max(0,(a.seen||1)+(Math.random()<.5?-0.4:0.4));
+  }
+  const status={};
+  for(const f of FEEDS) status[f.id]={ok:false,count:0,proxyOnly:!f.browser};
+  return { list:simState.map(a=>({...a,__src:new Set(a.__src)})), status };
+}
+
+/* ---------- Icon + render ---------- */
+function planeIcon(a){
+  const emgcy=isEmgcy(a);
+  const color=emgcy?"#ff3b46":"#ffb020";
+  const sel=a.hex===selectedHex;
+  const size=sel?32:24;
+  const rot=(typeof a.track==="number")?a.track:0;
+  const wrap="ac-mk"+(sel?" is-sel":"")+(emgcy?" is-emgcy":"");
+  const label=sel?`<span class="ac-lbl">${(a.flight||a.hex||"").trim()}</span>`:"";
+  const glyph=`<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="transform:rotate(${rot}deg);transform-origin:center;display:block">`+
+    `<path d="M12 3 L18 20 L12 16 L6 20 Z" fill="${color}" stroke="#0a0f1a" stroke-width="0.6"/></svg>`;
+  return L.divIcon({className:"",html:`<div class="${wrap}">${glyph}${label}</div>`,iconSize:[size,size],iconAnchor:[size/2,size/2]});
+}
+function render(list){
+  markersLayer.clearLayers();
+  list.forEach(a=>{
+    if(typeof a.lat!=="number"||typeof a.lon!=="number")return;
+    const m=L.marker([a.lat,a.lon],{icon:planeIcon(a),riseOnHover:true});
+    m.on("click",()=>selectAircraft(a.hex));
+    markersLayer.addLayer(m);
+  });
+  document.getElementById("cnt-mil").textContent=list.length;
+  if(selectedHex){const a=list.find(x=>x.hex===selectedHex); if(a)fillPanel(a);}
+}
+
+/* ---------- Feeds panel ---------- */
+function updateFeeds(list){
+  // count per-source contribution within the current region
+  for(const id in sourceStatus) sourceStatus[id].count=0;
+  for(const a of list) for(const sid of (a.__src||[])){ if(sourceStatus[sid]) sourceStatus[sid].count++; }
+
+  const host=document.getElementById("feed-list");
+  host.innerHTML="";
+  let okCount=0, attempted=0;
+  for(const f of FEEDS){
+    const st=sourceStatus[f.id]||{ok:f.browser?false:null,count:0,proxyOnly:!f.browser};
+    if(st.ok===true||st.ok===false) attempted++;
+    if(st.ok===true) okCount++;
+    const dotCls = st.ok===true?"ok":st.ok===false?"fail":"";
+    const row=document.createElement("div");
+    row.className="feed-row"+(st.ok===true?" live":"");
+    const tag = st.proxyOnly ? `<span class="feed-tag">proxy</span>`
+             : st.ok===true  ? `<span class="feed-cnt${st.count?"":" zero"}">${st.count}</span>`
+             : st.ok===false ? `<span class="feed-tag">offline</span>`
+             : `<span class="feed-tag">—</span>`;
+    row.innerHTML=`<span class="feed-dot ${dotCls}"></span><span class="feed-name">${f.id}</span>${tag}`;
+    host.appendChild(row);
+  }
+  document.getElementById("cnt-src").textContent=`${okCount}/${attempted}`;
+  document.getElementById("foot-unique").textContent=list.length;
+  const liveFeeds=FEEDS.filter(f=>sourceStatus[f.id]&&sourceStatus[f.id].ok===true).map(f=>f.id);
+  document.getElementById("foot-detail").textContent=
+    liveSource==="PROXY" ? "via proxy · "+liveFeeds.length+" feeds"
+    : liveFeeds.length ? "merged from "+liveFeeds.length+" feeds"
+    : "no live feed";
+}
+
+/* ---------- Flight strip ---------- */
+function selectAircraft(hex){
+  selectedHex=hex;
+  const a=currentList.find(x=>x.hex===hex);
+  if(a){fillPanel(a);map.panTo([a.lat,a.lon],{animate:true});}
+  render(currentList);
+}
+function fillPanel(a){
+  const emgcy=isEmgcy(a);
+  document.getElementById("panel").classList.add("open");
+  document.getElementById("sp-call").textContent=(a.flight||"").trim()||"NO CALLSIGN";
+  document.getElementById("sp-sub").textContent=`${(a.t||"—").toUpperCase()}  ·  ${emgcy?"EMERGENCY":"MILITARY"}`;
+  const chip=document.getElementById("sp-chip");
+  chip.className="chip "+(emgcy?"emgcy":"mil");
+  chip.textContent=emgcy?"EMERGENCY":"MILITARY";
+  const em=document.getElementById("em-banner");
+  if(emgcy){em.classList.add("show");document.getElementById("em-code").textContent=sqk(a)||"—";}
+  else em.classList.remove("show");
+  document.getElementById("d-alt").innerHTML=fmtAlt(a.alt_baro)+' <small>ft</small>';
+  document.getElementById("d-gs").innerHTML=(a.gs!=null?Math.round(a.gs):"—")+' <small>kt</small>';
+  document.getElementById("d-trk").innerHTML=(a.track!=null?Math.round(a.track):"—")+'<small>°</small>';
+  document.getElementById("d-sqk").textContent=sqk(a)||"—";
+  document.getElementById("d-hex").textContent=(a.hex||"—").toUpperCase();
+  document.getElementById("d-reg").textContent=(a.r||"—").trim().toUpperCase()||"—";
+  const tags=document.getElementById("d-src");
+  tags.innerHTML="";
+  [...(a.__src||[])].forEach(s=>{const el=document.createElement("span");el.className="src-tag";el.textContent=s;tags.appendChild(el);});
+  document.getElementById("sp-foot").textContent=
+    `POS ${a.lat.toFixed(3)}, ${a.lon.toFixed(3)}  ·  SEEN ${a.seen!=null?Math.round(a.seen)+"s":"—"} AGO`;
+}
+document.getElementById("sp-close").onclick=()=>{selectedHex=null;document.getElementById("panel").classList.remove("open");render(currentList);};
+
+/* ---------- Link badge ---------- */
+function setLink(state,reason,src){
+  const el=document.getElementById("link"), txt=document.getElementById("link-txt"), banner=document.getElementById("sim-banner");
+  el.className="badge "+(state==="live"?"live":state==="sim"?"sim":"wait");
+  txt.textContent=state==="live"?("LIVE"+(src?" · "+src:"")):state==="sim"?"SIMULATED":"ACQUIRING";
+  if(state==="sim"){banner.classList.add("show"); if(reason)document.getElementById("sim-reason").textContent="— "+reason;}
+  else banner.classList.remove("show");
+}
+
+/* ---------- Tick ---------- */
+async function tick(){
+  const now=Date.now(); const dt=Math.max(1,(now-lastTick)/1000); lastTick=now;
+  let out, live=false, reason="";
+  try{ out=await fetchLive(); live=true; }
+  catch(e){ out=simulate(dt); reason="no feed reachable here — serve over http://localhost (python3 -m http.server) or run server.js"; }
+
+  sourceStatus=out.status;
+  const list=out.list.filter(inRegion);
+  currentList=list;
+
+  render(list);
+  updateFeeds(list);
+  document.getElementById("clock").textContent="UPD "+zulu(new Date())+"Z";
+  setLink(live?"live":"sim",reason,live?liveSource:"");
+}
+function restart(){ if(timer)clearInterval(timer); lastTick=Date.now(); tick(); timer=setInterval(tick,+document.getElementById("rate").value); }
+
+/* ---------- Controls ---------- */
+function setRegion(id){
+  region=id;
+  document.querySelectorAll("#region-seg button").forEach(b=>b.classList.toggle("on",b.dataset.region===id));
+  document.getElementById("region-label").textContent=REGIONS[id].label;
+  map.setView(REGIONS[id].center,REGIONS[id].zoom,{animate:true});
+  drawBox();
+  tick();
+}
+document.querySelectorAll("#region-seg button").forEach(b=>b.onclick=()=>setRegion(b.dataset.region));
+document.getElementById("rate").onchange=restart;
+document.getElementById("recenter").onclick=()=>map.setView(REGIONS[region].center,REGIONS[region].zoom,{animate:true});
+
+/* ---------- Go ---------- */
+restart();
+</script>
+</body>
+</html>
